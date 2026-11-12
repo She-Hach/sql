@@ -204,13 +204,34 @@ function renderList(){
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function select(i){active=Math.max(0,Math.min(29,i));const t=TICKETS[active];$('eyebrow').textContent=`БИЛЕТ ${String(t.id).padStart(2,'0')} · ${t.domain.toUpperCase()} · ЗАДАНИЕ №${t.exercise_no}`;$('title').textContent='Практика · '+t.db;$('description').textContent=t.description;$('tables').innerHTML=t.tables.map(x=>`<span class="tag">${esc(x)}</span>`).join('');$('logic').textContent=t.logic;$('fundament').textContent=t.fundament;$('sql').value=saved.code[t.id]??`-- Билет ${t.id}: ${t.db}\nSELECT *\nFROM ${t.tables[0]};`;updateSqlView();$('status').textContent=saved.done.includes(t.id)?'Решено':'Ожидание';$('message').className='message';$('message').textContent='Запустите запрос, чтобы увидеть результат и автоматически проверить ответ.';$('output').innerHTML='<div class="empty">Здесь появится таблица результата.</div>';$('rowcount').textContent='0 строк';$('nextSolved').hidden=!saved.done.includes(t.id);activeTable=t.tables[0];renderDb();renderList();$('prev').disabled=active===0;$('next').disabled=active===29;replay();revealActive();}
 function renderTable(res,el){if(!res||!res.columns.length){el.innerHTML='<div class="empty">Запрос выполнен. Результат не содержит табличных данных.</div>';return;}let h='<table class="outtable"><thead><tr>'+res.columns.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr></thead><tbody>';res.values.slice(0,300).forEach(row=>{h+='<tr>'+row.map(v=>`<td>${v===null?'<i style="color:#77849a">NULL</i>':esc(v)}</td>`).join('')+'</tr>'});el.innerHTML=h+'</tbody></table>';}
-function canonical(r){return r.map(row=>JSON.stringify(row.map(v=>v===null?null:(typeof v==='number'?Number(v.toFixed(6)):String(v))))).sort();}
-function check(user,expected){if(user.columns.length!==expected.columns.length)return false;const a=user.columns.map(x=>x.toLowerCase()),b=expected.columns.map(x=>x.toLowerCase());if(a.some((x,i)=>x!==b[i]))return false;return JSON.stringify(canonical(user.values))===JSON.stringify(canonical(expected.values));}
+function normVal(v){if(v===null||v===undefined)return'\u2205null';if(typeof v==='number')return'n:'+Number(v.toFixed(6));const t=String(v).trim();if(/^-?\d+(\.\d+)?$/.test(t))return'n:'+Number(Number(t).toFixed(6));return's:'+t;}
+function normRows(r){return r.map(row=>row.map(normVal));}
+function rowsKey(rows,perm){return rows.map(row=>JSON.stringify(perm.map(i=>row[i]))).sort().join('\n');}
+/* Проверка по содержимому вывода: названия столбцов, их порядок и порядок строк не важны */
+function check(user,expected){
+ const n=expected.columns.length;if(user.columns.length!==n)return false;
+ if(user.values.length!==expected.values.length)return false;
+ const U=normRows(user.values),E=normRows(expected.values);
+ const sig=(rows,j)=>rows.map(r=>r[j]).sort().join('\u0001');
+ const us=[],es=[];for(let j=0;j<n;j++){us.push(sig(U,j));es.push(sig(E,j));}
+ const target=rowsKey(E,[...Array(n).keys()]);
+ const perm=new Array(n),used=new Array(n).fill(false);let steps=0;
+ function go(j){
+  if(j===n)return rowsKey(U,perm)===target;
+  for(let i=0;i<n;i++){
+   if(used[i]||us[i]!==es[j])continue;
+   if(++steps>20000)return false;
+   used[i]=true;perm[j]=i;if(go(j+1))return true;used[i]=false;
+  }
+  return false;
+ }
+ return go(0);
+}
 function run(){runInner();flash();}
 function runInner(){
  if(!db){toast('SQLite ещё загружается');return;}
  const code=$('sql').value.trim();if(!code){toast('Введите SQL-запрос');return;}
- try{const res=db.exec(code);if(res.length){renderTable(res[0],$('output'));const ok=check(res[0],db.exec(TICKETS[active].solution)[0]);if(ok){$('status').textContent='✓ Верно';$('message').className='message success';$('message').textContent='Отлично! Столбцы и набор строк совпали с эталоном. Билет засчитан.';if(!saved.done.includes(TICKETS[active].id)){saved.done.push(TICKETS[active].id);justSolved=TICKETS[active].id;}persist();progress();renderList();$('nextSolved').hidden=false;}else{$('status').textContent='Не совпало';$('message').className='message fail';$('message').textContent='Запрос выполнился, но результат отличается от эталона. Проверьте столбцы, фильтры, группировку и сортировку.';$('nextSolved').hidden=true;}}else{$('output').innerHTML='<div class="empty">Запрос выполнен без табличного результата.</div>';$('status').textContent='Выполнено';$('message').className='message';$('message').textContent='SQL-команда выполнена, но для проверки требуется SELECT с результатом.';$('nextSolved').hidden=true;}$('rowcount').textContent=(res[0]?.values.length||0)+' строк';}
+ try{const res=db.exec(code);if(res.length){res.reverse();renderTable(res[0],$('output'));const ok=check(res[0],db.exec(TICKETS[active].solution)[0]);if(ok){$('status').textContent='✓ Верно';$('message').className='message success';$('message').textContent='Отлично! Результат совпал с эталонным. Билет засчитан.';if(!saved.done.includes(TICKETS[active].id)){saved.done.push(TICKETS[active].id);justSolved=TICKETS[active].id;}persist();progress();renderList();$('nextSolved').hidden=false;}else{$('status').textContent='Не совпало';$('message').className='message fail';$('message').textContent='Запрос выполнился, но результат отличается от ожидаемого. Проверьте набор столбцов, фильтры, группировку и количество строк.';$('nextSolved').hidden=true;}}else{$('output').innerHTML='<div class="empty">Запрос выполнен без табличного результата.</div>';$('status').textContent='Выполнено';$('message').className='message';$('message').textContent='SQL-команда выполнена, но для проверки требуется SELECT с результатом.';$('nextSolved').hidden=true;}$('rowcount').textContent=(res[0]?.values.length||0)+' строк';}
  catch(e){$('status').textContent='Ошибка SQL';$('message').className='message fail';$('message').textContent=e.message;$('output').innerHTML='<div class="empty">Исправьте синтаксис и запустите запрос снова.</div>';$('nextSolved').hidden=true;}
 }
 function renderDb(){
